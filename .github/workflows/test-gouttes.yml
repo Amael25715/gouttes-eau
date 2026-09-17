@@ -1,0 +1,35 @@
+name: Tests Gouttes d'eau
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r code/requirements.txt
+
+      - name: Run automatic tests
+        run: python code/test_gouttes.py
+
+      - name: Manual proof (fragment -> lose -> reconstruct)
+        run: |
+          echo "Preuve manuelle alignement #25715 - $(date -Iseconds)" > /tmp/preuve.txt
+          python code/fragmentation.py fragmenter /tmp/preuve.txt --out /tmp/gouttes_ci
+          python code/fragmentation.py perdre --dossier /tmp/gouttes_ci --n 4
+          python code/fragmentation.py reconstruire --dossier /tmp/gouttes_ci --out /tmp/preuve_out.txt
+          cmp /tmp/preuve.txt /tmp/preuve_out.txt
+          echo "PREUVE CI OK : fichier reconstruit identique apres perte de 4 gouttes"

@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
 """
-POC Gouttes d'eau - Fragmentation / reconstruction avec Reed-Solomon
+POC Gouttes d'eau - Fragmentation / reconstruction par shards Reed-Solomon
 Aligné Message : fragmentation + reconstruction collaborative, pas de point unique.
+
+Principe correct :
+- On découpe les données en K shards de données
+- On calcule M shards de parité (stripe par stripe)
+- Toute combinaison de K shards parmi N = K+M permet de reconstruire
 
 Usage:
   python fragmentation.py fragmenter <fichier> [--out dossier]
@@ -9,12 +14,13 @@ Usage:
   python fragmentation.py perdre [--dossier gouttes] [--n 3]
 """
 
-import os
-import sys
-import json
-import hashlib
+from __future__ import annotations
+
 import argparse
+import hashlib
+import json
 import random
+import sys
 from pathlib import Path
 
 try:
@@ -23,145 +29,184 @@ except ImportError:
     print("Installez reedsolo : pip install reedsolo")
     sys.exit(1)
 
-# Paramètres par défaut (ajustables)
-K = 6          # fragments de données nécessaires
-M = 4          # fragments de parité (on peut en perdre jusqu'à M)
-N = K + M      # total de gouttes
+# Paramètres par défaut
+K = 6  # shards de données nécessaires
+M = 4  # shards de parité (on peut en perdre jusqu'à M)
+N = K + M
 
 
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def fragmenter(fichier: str, dossier_gouttes: str = "gouttes"):
-    """Découpe le fichier en N gouttes (K data + M parité)."""
-    Path(dossier_gouttes).mkdir(exist_ok=True)
+def _encode_shards(data: bytes, k: int = K, m: int = M) -> tuple[list[bytes], int]:
+    """Encode data en k + m shards. Retourne (liste de shards, taille originale)."""
+    n = k + m
+    pad = (k - len(data) % k) % k
+    padded = data + b"\x00" * pad
+    shard_len = len(padded) // k
 
-    with open(fichier, "rb") as f:
-        data = f.read()
+    data_shards = [bytearray(padded[i * shard_len : (i + 1) * shard_len]) for i in range(k)]
+    parity_shards = [bytearray(shard_len) for _ in range(m)]
 
+    rsc = RSCodec(m, nsize=n)
+
+    for pos in range(shard_len):
+        row = bytes(data_shards[i][pos] for i in range(k))
+        encoded = rsc.encode(row)
+        for j in range(m):
+            parity_shards[j][pos] = encoded[k + j]
+
+    shards = [bytes(s) for s in data_shards] + [bytes(s) for s in parity_shards]
+    return shards, len(data)
+
+
+def _decode_shards(
+    shards: list[bytes | None],
+    original_size: int,
+    k: int = K,
+    m: int = M,
+) -> bytes:
+    """Reconstruit les données à partir d'une liste de shards (None = manquant)."""
+    n = k + m
+    if len(shards) != n:
+        raise ValueError(f"Attendu {n} slots de shards, reçu {len(shards)}")
+
+    present = [i for i, s in enumerate(shards) if s is not None]
+    if len(present) < k:
+        raise ValueError(f"Seulement {len(present)} shards, il en faut au moins {k}")
+
+    shard_len = len(next(s for s in shards if s is not None))
+    for s in shards:
+        if s is not None and len(s) != shard_len:
+            raise ValueError("Shards de tailles incohérentes")
+
+    lost = [i for i in range(n) if shards[i] is None]
+    rsc = RSCodec(m, nsize=n)
+    recovered_padded = bytearray(k * shard_len)
+
+    for pos in range(shard_len):
+        received = bytearray(n)
+        erase_pos = []
+        for i in range(n):
+            if i in lost:
+                received[i] = 0
+                erase_pos.append(i)
+            else:
+                received[i] = shards[i][pos]
+
+        decoded = rsc.decode(bytes(received), erase_pos=erase_pos)[0]
+        for i in range(k):
+            recovered_padded[i * shard_len + pos] = decoded[i]
+
+    return bytes(recovered_padded[:original_size])
+
+
+def fragmenter(fichier: str, dossier_gouttes: str = "gouttes", k: int = K, m: int = M):
+    """Découpe le fichier en N = k+m gouttes."""
+    path = Path(fichier)
+    if not path.exists():
+        raise FileNotFoundError(fichier)
+
+    data = path.read_bytes()
     original_hash = sha256(data)
-    rsc = RSCodec(M)
+    shards, original_size = _encode_shards(data, k=k, m=m)
+    n = k + m
 
-    # POC : encodage global (pour gros fichiers → découper en blocs plus tard)
-    encoded = rsc.encode(data)
+    out = Path(dossier_gouttes)
+    out.mkdir(parents=True, exist_ok=True)
 
-    fragment_size = (len(encoded) + N - 1) // N
-    gouttes = []
-
-    for i in range(N):
-        start = i * fragment_size
-        end = min((i + 1) * fragment_size, len(encoded))
-        frag = encoded[start:end]
-        if len(frag) < fragment_size:
-            frag += b"\x00" * (fragment_size - len(frag))
-
+    gouttes_meta = []
+    for i, shard in enumerate(shards):
         nom = f"goutte_{i:02d}.bin"
-        chemin = Path(dossier_gouttes) / nom
-        with open(chemin, "wb") as f:
-            f.write(frag)
-
-        gouttes.append({
-            "index": i,
-            "fichier": nom,
-            "hash": sha256(frag),
-            "taille": len(frag)
-        })
-        print(f"  Goutte {i:02d} écrite → {chemin}")
+        (out / nom).write_bytes(shard)
+        gouttes_meta.append({"index": i, "fichier": nom, "hash": sha256(shard), "taille": len(shard)})
+        print(f"  Goutte {i:02d} écrite → {out / nom} ({len(shard)} octets)")
 
     meta = {
         "original_hash": original_hash,
-        "original_size": len(data),
-        "k": K,
-        "m": M,
-        "n": N,
-        "fragment_size": fragment_size,
-        "gouttes": gouttes
+        "original_size": original_size,
+        "k": k,
+        "m": m,
+        "n": n,
+        "shard_size": len(shards[0]),
+        "gouttes": gouttes_meta,
     }
-    with open(Path(dossier_gouttes) / "meta.json", "w") as f:
-        json.dump(meta, f, indent=2)
-
+    (out / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     print(f"\nFragmentation terminée. Hash original : {original_hash}")
+    print(f"Paramètres : K={k} M={m} N={n} — on peut perdre jusqu'à {m} gouttes.")
     return meta
 
 
-def reconstruire(dossier_gouttes: str = "gouttes", sortie: str = "reconstruit.bin"):
-    """Reconstruit à partir d'un sous-ensemble de gouttes."""
-    meta_path = Path(dossier_gouttes) / "meta.json"
+def reconstruire(dossier_gouttes: str = "gouttes", sortie: str = "reconstruit.bin") -> bool:
+    """Reconstruit à partir des gouttes disponibles."""
+    dossier = Path(dossier_gouttes)
+    meta_path = dossier / "meta.json"
     if not meta_path.exists():
         print("meta.json introuvable")
         return False
 
-    with open(meta_path) as f:
-        meta = json.load(f)
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    k, m, n = meta["k"], meta["m"], meta["n"]
 
-    rsc = RSCodec(meta["m"])
-    fragment_size = meta["fragment_size"]
-
-    fragments = [None] * meta["n"]
+    shards: list[bytes | None] = [None] * n
     disponibles = 0
 
     for g in meta["gouttes"]:
-        chemin = Path(dossier_gouttes) / g["fichier"]
+        chemin = dossier / g["fichier"]
+        idx = g["index"]
         if chemin.exists():
-            with open(chemin, "rb") as f:
-                frag = f.read()
+            frag = chemin.read_bytes()
             if sha256(frag) == g["hash"]:
-                fragments[g["index"]] = frag
+                shards[idx] = frag
                 disponibles += 1
-                print(f"  Goutte {g['index']:02d} OK")
+                print(f"  Goutte {idx:02d} OK")
             else:
-                print(f"  Goutte {g['index']:02d} CORROMPUE (ignorée)")
+                print(f"  Goutte {idx:02d} CORROMPUE (ignorée)")
         else:
-            print(f"  Goutte {g['index']:02d} manquante")
+            print(f"  Goutte {idx:02d} manquante")
 
-    if disponibles < meta["k"]:
-        print(f"Échec : seulement {disponibles} gouttes valides, il en faut au moins {meta['k']}")
+    if disponibles < k:
+        print(f"Échec : seulement {disponibles} gouttes valides, il en faut au moins {k}")
         return False
-
-    encoded = b"".join(
-        f if f is not None else b"\x00" * fragment_size
-        for f in fragments
-    )
 
     try:
-        decoded = rsc.decode(encoded)[0]
-        decoded = decoded[:meta["original_size"]]
-
-        final_hash = sha256(decoded)
-        if final_hash != meta["original_hash"]:
-            print("Attention : hash final différent (limite possible du POC simplifié)")
-
-        with open(sortie, "wb") as f:
-            f.write(decoded)
-        print(f"\nReconstruction réussie → {sortie}")
-        print(f"Hash : {final_hash}")
-        return True
-    except ReedSolomonError as e:
-        print(f"Échec de reconstruction Reed-Solomon : {e}")
+        decoded = _decode_shards(shards, meta["original_size"], k=k, m=m)
+    except (ReedSolomonError, ValueError) as e:
+        print(f"Échec de reconstruction : {e}")
         return False
+
+    final_hash = sha256(decoded)
+    Path(sortie).write_bytes(decoded)
+
+    if final_hash != meta["original_hash"]:
+        print(f"ERREUR : hash final différent\n  attendu : {meta['original_hash']}\n  obtenu  : {final_hash}")
+        return False
+
+    print(f"\nReconstruction réussie → {sortie}")
+    print(f"Hash : {final_hash}")
+    return True
 
 
 def simuler_perte(dossier_gouttes: str = "gouttes", nombre_a_supprimer: int = 3):
     """Supprime aléatoirement des gouttes pour tester la résilience."""
-    meta_path = Path(dossier_gouttes) / "meta.json"
-    with open(meta_path) as f:
-        meta = json.load(f)
-
+    dossier = Path(dossier_gouttes)
+    meta = json.loads((dossier / "meta.json").read_text(encoding="utf-8"))
     indices = list(range(meta["n"]))
     a_supprimer = random.sample(indices, min(nombre_a_supprimer, meta["n"]))
 
     for i in a_supprimer:
-        chemin = Path(dossier_gouttes) / f"goutte_{i:02d}.bin"
+        chemin = dossier / f"goutte_{i:02d}.bin"
         if chemin.exists():
             chemin.unlink()
             print(f"  Supprimé goutte_{i:02d}.bin")
 
     print(f"Simulation : {len(a_supprimer)} gouttes perdues.")
+    return a_supprimer
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="POC Gouttes d'eau")
+    parser = argparse.ArgumentParser(description="POC Gouttes d'eau (Reed-Solomon shards)")
     sub = parser.add_subparsers(dest="cmd")
 
     p1 = sub.add_parser("fragmenter", help="Fragmenter un fichier")
@@ -181,7 +226,8 @@ if __name__ == "__main__":
     if args.cmd == "fragmenter":
         fragmenter(args.fichier, args.out)
     elif args.cmd == "reconstruire":
-        reconstruire(args.dossier, args.out)
+        ok = reconstruire(args.dossier, args.out)
+        sys.exit(0 if ok else 1)
     elif args.cmd == "perdre":
         simuler_perte(args.dossier, args.n)
     else:
