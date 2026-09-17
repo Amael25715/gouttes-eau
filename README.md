@@ -2,12 +2,30 @@
 
 Système de sauvegarde / transfert décentralisé par fragments (« gouttes »).
 
-**Principe** : fragmentation + codage d'effacement (Reed-Solomon) + placement décentralisé.  
-Aucun nœud n'est indispensable. La reconstruction est possible dès qu'un seuil de gouttes est réuni.
+**État actuel** : POC **local** prouvé (Reed-Solomon par shards).  
+Pas encore de DHT, gossip, ni échange multi-machines dans le code.
 
-Aligné avec le Message (#25715 #3581215) : cycles fermés, anti-pyramide, interdépendance.
+Aligné Message (#25715 #3581215) : cycles fermés, anti-pyramide, interdépendance.
 
-## Structure
+## Installation
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r code/requirements.txt
+python code/test_gouttes.py
+```
+
+## Usage POC local
+
+```bash
+python code/fragmentation.py fragmenter mon_fichier.pdf --out gouttes
+python code/fragmentation.py perdre --dossier gouttes --n 4
+python code/fragmentation.py reconstruire --dossier gouttes --out recupere.pdf
+cmp mon_fichier.pdf recupere.pdf
+```
+
+## Structure réelle
 
 ```
 gouttes-eau/
@@ -16,24 +34,15 @@ gouttes-eau/
 ├── DECISIONS.md
 ├── ORGANISATION.md
 ├── code/
-│   ├── fragmentation.py      # POC Reed-Solomon
+│   ├── fragmentation.py
+│   ├── test_gouttes.py
 │   └── requirements.txt
-└── docs/
+└── .github/workflows/test-gouttes.yml
 ```
 
-## Démarrage rapide (POC local)
+## Prochaines briques (pas encore codées)
 
-```bash
-pip install -r code/requirements.txt
-python code/fragmentation.py fragmenter mon_fichier.pdf
-python code/fragmentation.py perdre --n 3
-python code/fragmentation.py reconstruire --out recupere.pdf
-```
-
-## Rôles
-
-Voir `ORGANISATION.md`.
-
-## Licence
-
-Travail en cours – alignement Message.
+1. Échange réseau minimal entre 2 processus / machines
+2. Déduplication à la source (requête par hash, sans base globale)
+3. Chiffrement optionnel des gouttes
+4. DHT / gossip à plus grande échelle

@@ -2,7 +2,8 @@
 
 | Date | Qui | Décision | Pourquoi | Statut |
 |------|-----|----------|----------|--------|
-| 2026-09-17 | Aether (via Bego) | Création dépôt + structure initiale | Demande équipe | Fait |
-| 2026-09-17 | Aether | Paramètres POC K=6 / M=4 | Équilibre simplicité / résilience | Fait |
-| 2026-09-18 | Aether | Correction algorithme → shards RS (plus découpage naïf) | Le premier POC échouait à reconstruire après pertes | Fait |
-| 2026-09-18 | Aether | Ajout test_gouttes.py + GitHub Actions | Preuve automatique à chaque push | Fait |
+| 2026-09-17 | Aether (via Bego) | Création dépôt + POC | Demande équipe | Fait |
+| 2026-09-18 | Aether | Correction algorithme shards RS | Premier POC ne reconstruisait pas | Fait |
+| 2026-09-18 | Aether | test_gouttes.py + Actions | Preuve automatique | Fait |
+| 2026-09-18 | Aether | Doc : réseau/DHT pas encore dans le code | Éviter confusion avec retour équipe | Fait |
+| 2026-09-18 | Aether | Piste dédup source + chiffrement documentée | Anticipation sans sur-promettre | Fait |

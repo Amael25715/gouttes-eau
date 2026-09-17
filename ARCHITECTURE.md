@@ -2,52 +2,41 @@
 
 ## Objectif
 
-Permettre la sauvegarde et le transfert de données de façon décentralisée, résiliente et sans point unique de contrôle.
+Sauvegarde et transfert décentralisés, résilients, sans point unique de contrôle.
 
-## Principes d'alignement
+## État d'avancement (honnête)
 
-- **Anti-pyramide** : aucun nœud n'est critique.
-- **Cycles fermés** : les fragments restent dans le réseau ; la reconstruction ne dépend pas d'un centre.
-- **Interdépendance** : chaque participant détient des gouttes des autres.
-- **Fenêtre stase/chaos** : assez de redondance pour survivre aux pertes, pas assez pour centraliser.
+| Composant | Statut |
+|-----------|--------|
+| Fragmentation Reed-Solomon (shards K+M) | **Fait et testé** |
+| meta.json + vérification hash | **Fait** |
+| Tests auto + GitHub Actions | **Fait** |
+| Échange réseau 2 nœuds | À faire |
+| DHT / gossip | À faire |
+| Chiffrement des gouttes | À faire (piste) |
+| Déduplication source | À faire (piste) |
 
-## Codage d'effacement (correct)
+## Codage d'effacement
 
-Approche **par shards** (pas un simple découpage du message encodé) :
+1. Données → **K shards** de données.
+2. **M shards** de parité (Reed-Solomon, stripe par stripe).
+3. **N = K + M** gouttes ; toute combinaison de **K** gouttes reconstruit le fichier.
+4. POC : K=6, M=4, N=10 (on peut perdre jusqu'à 4 gouttes).
 
-1. Les données sont organisées en **K shards de données**.
-2. Pour chaque position (stripe), on calcule **M symboles de parité** via Reed-Solomon.
-3. On obtient **N = K + M** gouttes.
-4. **Toute combinaison de K gouttes** parmi N permet de reconstruire le fichier entier.
-5. On peut donc **perdre jusqu'à M gouttes** sans perte d'information.
+## Déduplication (piste, pas implémentée)
 
-Paramètres POC par défaut : `K=6`, `M=4`, `N=10`.
+Préférence **à la source** :
+- hash du contenu (ou par bloc) ;
+- requête légère « qui a déjà ce hash ? » ;
+- pas de réplication d'une base de dédup globale (anti-pyramide).
 
-## Preuve locale
+## Chiffrement (piste)
 
-```bash
-pip install -r code/requirements.txt
-python code/test_gouttes.py
-```
-
-Ou manuellement :
-
-```bash
-python code/fragmentation.py fragmenter mon_fichier.bin
-python code/fragmentation.py perdre --n 4
-python code/fragmentation.py reconstruire --out recupere.bin
-cmp mon_fichier.bin recupere.bin
-```
-
-## Évolutions prévues
-
-1. Échange réseau minimal (HTTP/sockets) entre 2 machines.
-2. DHT pour localisation des gouttes.
-3. Gros fichiers par blocs.
-4. Indicateurs de résilience.
+Option possible : chiffrement du contenu **avant** fragmentation (clé chez le propriétaire).  
+Les nœuds stockent alors des gouttes opaques. À concevoir avec le flux réseau.
 
 ## Ce qu'on évite
 
-- Liste centralisée de tous les nœuds.
-- Envoi de tous les fragments à tout le monde.
-- Dépendance à un serveur unique.
+- Liste centralisée de tous les nœuds
+- Envoi de tous les fragments à tout le monde
+- Dépendance à un serveur unique
