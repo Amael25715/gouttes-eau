@@ -2,7 +2,7 @@
 """
 CLI MVP Gouttes d'Eau
 
-Commandes : genkeys | encode | decode | verify | simulate-loss
+Commandes : genkeys | encode | decode | verify | simulate-loss | list
 
 Exit codes :
   0 = OK
@@ -16,16 +16,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
-# Imports locaux
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fragmentation import (
     K,
     M,
-    N,
     fragmenter,
     reconstruire,
     simuler_perte,
@@ -40,7 +40,48 @@ from signature import (
     verify_meta,
 )
 
-VERSION = "0.5.0-mvp"
+VERSION = "0.5.1-mvp"
+
+
+def make_batch_id(original_hash: str) -> str:
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+    return f"{ts}_{original_hash[:8]}_{os.urandom(3).hex()}"
+
+
+def safe_basename(name: str | None, fallback: str = "restored.bin") -> str:
+    """Nom de fichier sans chemin (evite ../)."""
+    if not name:
+        return fallback
+    base = Path(name).name
+    if not base or base in {".", ".."}:
+        return fallback
+    return base
+
+
+def iter_batch_dirs(root: Path) -> list[Path]:
+    """Dossiers contenant un meta.json (racine legacy ou sous-dossiers batch)."""
+    if not root.exists():
+        return []
+    found: list[Path] = []
+    if (root / "meta.json").exists():
+        found.append(root)
+    if root.is_dir():
+        for child in sorted(root.iterdir()):
+            if child.is_dir() and (child / "meta.json").exists() and child not in found:
+                found.append(child)
+    return found
+
+
+def resolve_decode_output(output: Path, meta: dict) -> Path:
+    name = safe_basename(meta.get("original_filename"), "restored.bin")
+    out_str = str(output)
+    if output.exists() and output.is_dir():
+        return output / name
+    if out_str.endswith(("/", "\\")) or output.suffix == "":
+        output.mkdir(parents=True, exist_ok=True)
+        return output / name
+    output.parent.mkdir(parents=True, exist_ok=True)
+    return output
 
 
 def cmd_genkeys(args: argparse.Namespace) -> int:
@@ -54,25 +95,49 @@ def cmd_genkeys(args: argparse.Namespace) -> int:
 
 def cmd_encode(args: argparse.Namespace) -> int:
     input_path = Path(args.input)
-    if not input_path.exists():
+    if not input_path.exists() or not input_path.is_file():
         print(f"Fichier introuvable : {input_path}", file=sys.stderr)
         return 4
 
-    out_dir = Path(args.output)
     try:
         private_key = load_private_key(args.key)
     except Exception as e:
         print(f"Erreur cle privee : {e}", file=sys.stderr)
         return 1
 
-    meta = fragmenter(str(input_path), str(out_dir), k=K, m=M)
+    root = Path(args.output)
+    root.mkdir(parents=True, exist_ok=True)
+    staging = root / f".staging_{os.urandom(4).hex()}"
+    staging.mkdir(parents=True, exist_ok=True)
 
-    # Signer le manifeste
-    signature = sign_meta(meta, private_key)
-    meta["signature"] = signature
-    meta_path = out_dir / "meta.json"
-    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-    print(f"Manifeste signe -> {meta_path}")
+    try:
+        meta = fragmenter(str(input_path), str(staging), k=K, m=M)
+        batch_id = make_batch_id(meta["original_hash"])
+        meta["version"] = VERSION
+        meta["batch_id"] = batch_id
+        meta["timestamp"] = datetime.now(timezone.utc).isoformat()
+        meta["original_filename"] = safe_basename(input_path.name)
+        signature = sign_meta(meta, private_key)
+        meta["signature"] = signature
+        (staging / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+        dest = root / batch_id
+        if dest.exists():
+            dest = root / f"{batch_id}_{os.urandom(2).hex()}"
+        staging.rename(dest)
+    except Exception:
+        # nettoyage staging si echec
+        try:
+            for p in staging.glob("*"):
+                p.unlink()
+            staging.rmdir()
+        except OSError:
+            pass
+        raise
+
+    print(f"Batch ID : {meta['batch_id']}")
+    print(f"Fichier original : {meta['original_filename']}")
+    print(f"Manifeste signe -> {dest / 'meta.json'}")
     return 0
 
 
@@ -99,16 +164,14 @@ def cmd_decode(args: argparse.Namespace) -> int:
             print("Signature du manifeste INVALIDE", file=sys.stderr)
             return 1
         print("Signature manifeste : OK")
+        if meta.get("batch_id"):
+            print(f"Batch : {meta['batch_id']}")
+        if meta.get("original_filename"):
+            print(f"Fichier attendu : {meta['original_filename']}")
 
-    out = Path(args.output)
-    # Si output est un repertoire, reconstituer un nom de fichier
-    if out.suffix == "" or out.is_dir():
-        out.mkdir(parents=True, exist_ok=True)
-        out = out / "restored.bin"
-
+    out = resolve_decode_output(Path(args.output), meta)
     ok = reconstruire(str(drops), str(out))
     if not ok:
-        # Distinguer shards manquants vs corruption si possible
         present = len(list(drops.glob("goutte_*.bin")))
         k = meta.get("k", K)
         if present < k:
@@ -164,6 +227,42 @@ def cmd_simulate_loss(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_list(args: argparse.Namespace) -> int:
+    root = Path(args.drops)
+    batches = iter_batch_dirs(root)
+    if not batches:
+        print(f"Aucun batch trouve dans {root}")
+        return 0
+
+    print(f"BATCHES ({len(batches)}) dans {root}")
+    rows = []
+    for d in batches:
+        meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+        n = meta.get("n", 10)
+        present = sum(1 for i in range(n) if (d / f"goutte_{i:02d}.bin").exists())
+        rows.append(
+            {
+                "dir": str(d),
+                "batch_id": meta.get("batch_id", d.name),
+                "filename": meta.get("original_filename", "?"),
+                "size": meta.get("original_size", 0),
+                "present": present,
+                "n": n,
+                "k": meta.get("k", "?"),
+                "created": meta.get("timestamp", "?"),
+            }
+        )
+    rows.sort(key=lambda r: str(r["created"]), reverse=True)
+    for b in rows:
+        print(f"\n[ {b['batch_id']} ]")
+        print(f"  Dossier : {b['dir']}")
+        print(f"  Fichier : {b['filename']}")
+        print(f"  Taille  : {b['size']} octets")
+        print(f"  Shards  : {b['present']}/{b['n']} (K={b['k']})")
+        print(f"  Cree    : {b['created']}")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Gouttes d'Eau CLI MVP")
     parser.add_argument("--version", action="version", version=f"gouttes-eau {VERSION}")
@@ -172,14 +271,14 @@ def main() -> int:
     p_keys = sub.add_parser("genkeys", help="Generer une paire Ed25519")
     p_keys.add_argument("--output", default=".gouttes-keys")
 
-    p_enc = sub.add_parser("encode", help="Fragmenter + signer")
+    p_enc = sub.add_parser("encode", help="Fragmenter + signer (sous-dossier batch)")
     p_enc.add_argument("--input", required=True)
     p_enc.add_argument("--output", default="gouttes")
-    p_enc.add_argument("--key", required=True, help="Chemin private.key")
+    p_enc.add_argument("--key", required=True, help="Chemin private.key (binaire 32 octets)")
 
     p_dec = sub.add_parser("decode", help="Reconstruire (+ verifier signature si --pubkey)")
-    p_dec.add_argument("--input", required=True, help="Dossier des gouttes")
-    p_dec.add_argument("--output", required=True)
+    p_dec.add_argument("--input", required=True, help="Dossier d'un batch (celui qui contient meta.json)")
+    p_dec.add_argument("--output", required=True, help="Dossier ou fichier de sortie")
     p_dec.add_argument("--pubkey", default=None)
 
     p_ver = sub.add_parser("verify", help="Verifier signature et hashes")
@@ -187,8 +286,11 @@ def main() -> int:
     p_ver.add_argument("--pubkey", default=None)
 
     p_loss = sub.add_parser("simulate-loss", help="Supprimer N gouttes aleatoires")
-    p_loss.add_argument("--drops", required=True)
+    p_loss.add_argument("--drops", required=True, help="Dossier d'un batch")
     p_loss.add_argument("--missing", type=int, default=3)
+
+    p_list = sub.add_parser("list", help="Lister les batches")
+    p_list.add_argument("--drops", required=True, help="Racine contenant des sous-dossiers batch")
 
     args = parser.parse_args()
     if not args.cmd:
@@ -201,6 +303,7 @@ def main() -> int:
         "decode": cmd_decode,
         "verify": cmd_verify,
         "simulate-loss": cmd_simulate_loss,
+        "list": cmd_list,
     }
     return handlers[args.cmd](args)
 
