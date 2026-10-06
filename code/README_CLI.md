@@ -1,79 +1,61 @@
-# Guide CLI — Gouttes d'Eau MVP
+# Guide CLI — Gouttes d'Eau MVP 0.5.1
 
 ## Installation
 
 ```bash
 cd gouttes-eau
 python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+source .venv/bin/activate
 pip install -r code/requirements.txt
 python code/gouttes_cli.py --version
 ```
 
-## Commandes
-
-### Generer les cles Ed25519
+## Encode (sous-dossier batch + nom original)
 
 ```bash
 python code/gouttes_cli.py genkeys --output ~/.gouttes-keys/
-```
-
-- `private.key` : ne jamais partager (chmod 600 si possible)
-- `public.key` : peut etre partagee pour verification
-
-### Encoder (fragmenter + signer le manifeste)
-
-```bash
 python code/gouttes_cli.py encode \
-  --input mon_fichier.pdf \
-  --output ./mes_gouttes \
+  --input fichier.m4a \
+  --output ./drops \
   --key ~/.gouttes-keys/private.key
+# -> ./drops/<batch_id>/goutte_XX.bin + meta.json
 ```
 
-Produit 10 fichiers `goutte_XX.bin` + `meta.json` signe.
+`meta.json` contient `batch_id`, `original_filename`, hash, K/M/N, signature Ed25519.
 
-### Verifier
-
-```bash
-python code/gouttes_cli.py verify \
-  --drops ./mes_gouttes \
-  --pubkey ~/.gouttes-keys/public.key
-```
-
-### Simuler des pertes
+## List / decode (nom d'origine restaure)
 
 ```bash
-python code/gouttes_cli.py simulate-loss --drops ./mes_gouttes --missing 4
-```
+python code/gouttes_cli.py list --drops ./drops
 
-### Decoder (reconstruire)
+python code/gouttes_cli.py simulate-loss --drops ./drops/<batch_id> --missing 4
 
-```bash
 python code/gouttes_cli.py decode \
-  --input ./mes_gouttes \
-  --output ./restaure.bin \
+  --input ./drops/<batch_id> \
+  --output ./restored/ \
   --pubkey ~/.gouttes-keys/public.key
+# -> ./restored/fichier.m4a
 ```
 
-## Codes de sortie
-
-| Code | Signification |
-|------|----------------|
-| 0 | OK |
-| 1 | Erreur signature / cle |
-| 2 | Donnees corrompues |
-| 3 | Shards insuffisants |
-| 4 | Autre erreur |
+`--input` du decode = le dossier **du batch** (celui qui contient `meta.json`), pas la racine `./drops`.
 
 ## Tests
 
 ```bash
 python code/test_gouttes.py
 python code/test_signature.py
+python code/test_batches.py
 ```
 
-## Notes MVP
+## Anti-pyramide (MVP)
 
-- Dispersion multi-machines : **manuelle** (copier les gouttes soi-meme).
-- Une seule cle de signature (BEGO / pilote) pour le MVP.
-- Perte de la cle privee = impossibilite de prouver l'authenticite des futurs manifestes (les gouttes deja creees restent reconstructibles si on a assez de shards + un meta de confiance).
+- Proprietaire = centre de **ses** cles + de **son** index (ici : arborescence locale `drops/<batch_id>`).
+- Stockeurs = copies aveugles de dossiers batch. Ils ne doivent pas devenir un index global ni un otage.
+- Index YAML personnel / DHT / chunking machine entiere = **phase 2+**, pas ce sprint.
+- 1 fichier = 1 batch **ne scale pas** pour un backup machine (des dizaines de milliers de fichiers). Chunking + snapshots : conception separee, pas codee ici.
+
+## Notes
+
+- Cles : fichiers **binaires** 32 octets (`private.key` / `public.key`), pas du PEM texte.
+- Dispersion multi-machines : copie manuelle du dossier `batch_id`.
+- Perte de la cle privee = plus de signatures nouvelles ; reconstruction possible avec assez de gouttes + un `meta.json` de confiance.
