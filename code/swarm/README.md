@@ -21,23 +21,34 @@ Attendu, dans cet ordre :
 
 Si une ligne manque, le test a échoué. Dépendances : `reedsolo` et `cryptography` (déjà dans `code/requirements.txt`).
 
-## Test 2 — deux processus, à la main, sur la même machine
+## Test 2 — trois processus, à la main, sur la même machine
 
-Trois terminaux, toujours depuis `code/`.
+Deux hôtes ne suffisent pas. 10 gouttes réparties sur 2 machines font 5 et 5. En perdre 5 dépasse la tolérance de 4. Le message `gouttes manquantes : 5` est alors normal, pas un succès.
+
+`sample.txt` n'est pas dans le dépôt. Il faut le créer.
+
+Trois terminaux, depuis `code/`.
 
 ```bash
+echo "test manuel" > /tmp/sample.txt
 python3.14 -m swarm.node --id A --host 127.0.0.1 --port 19110 --data /tmp/gouttesA
 python3.14 -m swarm.node --id B --host 127.0.0.1 --port 19111 --data /tmp/gouttesB --bootstrap 127.0.0.1:19110
-python3.14 -m swarm.owner put --file sample.txt --key /tmp/owner.key --introducer 127.0.0.1:19110 --receipt /tmp/receipt.json
+python3.14 -m swarm.node --id C --host 127.0.0.1 --port 19112 --data /tmp/gouttesC --bootstrap 127.0.0.1:19110
 ```
 
-Arrêter A (Ctrl-C) et supprimer `/tmp/gouttesA`. Puis :
+C doit être démarré avant le `put`, sinon A ne le connaît pas. Puis, dans un quatrième terminal :
 
 ```bash
-python3.14 -m swarm.owner get --key /tmp/owner.key --receipt /tmp/receipt.json --introducer 127.0.0.1:19111 --output /tmp/restaure/
+python3.14 -m swarm.owner put --file /tmp/sample.txt --key /tmp/owner.key --introducer 127.0.0.1:19110 --receipt /tmp/receipt.json
 ```
 
-`/tmp/receipt.json` ne doit contenir aucune adresse. La relecture passe par B, qui n'était pas dans le reçu.
+La ligne `répartition` doit indiquer qu'aucun hôte n'a plus de 4 gouttes. Arrêter A (Ctrl-C), supprimer `/tmp/gouttesA`, relire **via C** (le dernier démarré : il connaît A et B ; B peut ne pas connaître C) :
+
+```bash
+python3.14 -m swarm.owner get --key /tmp/owner.key --receipt /tmp/receipt.json --introducer 127.0.0.1:19112 --output /tmp/restaure/
+```
+
+Attendu : `gouttes manquantes : 4` ou moins, puis `OK`. Le reçu ne contient toujours aucune adresse.
 
 ## Test 3 — deux machines (seulement après les deux premiers)
 

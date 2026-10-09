@@ -12,7 +12,7 @@ from pathlib import Path
 
 from swarm.box import build_ticket, new_key, open_ticket, rebuild
 from swarm.protocol import rpc
-from swarm.rs import sha256
+from swarm.rs import M, sha256
 
 
 def hello_peers(introducer: tuple[str, int]) -> list[dict]:
@@ -69,6 +69,11 @@ def cmd_put(args: argparse.Namespace) -> int:
         peer = peers[index % len(peers)]
         put_blob(peer, drop_id, shard)
         print(f"  goutte {index:02d} déposée ({drop_id[:12]})")
+
+    worst = max(sum(1 for i in range(len(drops)) if i % len(peers) == slot) for slot in range(len(peers)))
+    print(f"répartition : {len(peers)} hôte(s), le plus chargé en a {worst} (tolérance {M})")
+    if worst > M:
+        print(f"ATTENTION : si cet hôte disparaît, la relecture échoue. Il en faut assez pour qu'aucun n'en ait plus de {M}.")
 
     for peer in peers:
         put_blob(peer, ticket_id, ticket_blob)
